@@ -1,0 +1,11 @@
+services:
+  crosspost:
+    build: .
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ~/.claude:/home/node/.claude:ro
+    restart: unless-stopped
