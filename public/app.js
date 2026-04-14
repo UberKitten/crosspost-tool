@@ -3,14 +3,16 @@
 
   let config = { fediCharLimit: 3000, blueskyCharLimit: 300 };
   let replyTo = null;
-  let uploadedImages = []; // [{ id, filename, mimeType, alt }]
   let timelineFilter = 'all';
   let showSchedule = false;
   let target = 'both';
   let showDraftsList = false;
   let stashedDrafts = [];
 
-  // Platform settings
+  // Thread: array of { text, images: [{ id, filename, mimeType, alt }] }
+  let thread = [{ text: '', images: [] }];
+
+  // Platform settings (shared across thread)
   let fediVisibility = 'public';
   let fediCW = '';
   let bskyLabels = [];
@@ -20,12 +22,15 @@
   let bskySettingsOpen = false;
   let fediSettingsOpen = false;
 
-  // Drag reorder state
+  // Upload/autosave
+  let uploading = false;
+  let uploadProgress = 0;
+  let uploadTargetIdx = 0;
+  let autosaveTimer = null;
   let dragIdx = null;
 
-  // Autosave
-  let autosaveTimer = null;
-  let lastSavedText = '';
+  // Alt generation: { 'entryIdx-imgIdx': AbortController }
+  const altGenerating = {};
 
   const $ = (sel, el) => (el || document).querySelector(sel);
   const $$ = (sel, el) => [...(el || document).querySelectorAll(sel)];
@@ -43,20 +48,14 @@
 
   // ── Init ──
   async function init() {
-    const [cfgRes, draftRes] = await Promise.all([
-      fetch('/api/config'),
-      fetch('/api/drafts/active'),
-    ]);
+    const [cfgRes, draftRes] = await Promise.all([fetch('/api/config'), fetch('/api/drafts/active')]);
     config = await cfgRes.json();
     const draft = await draftRes.json();
     if (draft) {
       target = draft.targets || 'both';
-      lastSavedText = draft.text || '';
-      const imgs = draft.images ? JSON.parse(draft.images) : [];
-      uploadedImages = imgs;
-      if (draft.parent_id) {
-        replyTo = { id: draft.parent_id, text: '(saved draft reply)', targets: target };
-      }
+      try { thread = JSON.parse(draft.thread); } catch { thread = [{ text: '', images: [] }]; }
+      if (!thread.length) thread = [{ text: '', images: [] }];
+      if (draft.parent_id) replyTo = { id: draft.parent_id, text: '(saved draft reply)', targets: target };
     }
     render();
     setupGlobalDrop();
@@ -69,25 +68,16 @@
     overlay.className = 'drop-overlay';
     overlay.innerHTML = '<div class="drop-overlay-label">Drop images to attach</div>';
     document.body.appendChild(overlay);
-
     document.addEventListener('dragenter', e => {
       if (!e.dataTransfer?.types?.includes('Files')) return;
-      dragCounter++;
-      overlay.classList.add('visible');
+      dragCounter++; overlay.classList.add('visible');
     });
-    document.addEventListener('dragleave', () => {
-      dragCounter--;
-      if (dragCounter <= 0) { dragCounter = 0; overlay.classList.remove('visible'); }
-    });
-    document.addEventListener('dragover', e => {
-      if (!e.dataTransfer?.types?.includes('Files')) return;
-      e.preventDefault();
-    });
+    document.addEventListener('dragleave', () => { dragCounter--; if (dragCounter <= 0) { dragCounter = 0; overlay.classList.remove('visible'); } });
+    document.addEventListener('dragover', e => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
     document.addEventListener('drop', e => {
-      dragCounter = 0;
-      overlay.classList.remove('visible');
+      dragCounter = 0; overlay.classList.remove('visible');
       const files = Array.from(e.dataTransfer?.files || []).filter(f => f.type.startsWith('image/'));
-      if (files.length) { e.preventDefault(); uploadFiles(files); }
+      if (files.length) { e.preventDefault(); uploadFiles(files, thread.length - 1); }
     });
   }
 
@@ -100,10 +90,9 @@
     loadTimeline();
   }
 
-  // ── Composer HTML ──
+  // ── Composer ──
   function renderComposer() {
     const limit = getCharLimit();
-    const text = lastSavedText;
     return `
       <div class="composer">
         ${replyTo ? `
@@ -117,19 +106,10 @@
           <button class="target-btn ${target === 'both' ? 'active-both' : ''}" data-target="both">Both</button>
           <button class="target-btn ${target === 'fedi' ? 'active-fedi' : ''}" data-target="fedi">Fedi</button>
         </div>
-        <div class="compose-area">
-          <textarea id="compose-text" placeholder="What's on your mind?">${esc(text)}</textarea>
-          <span class="char-count" id="char-count">0 / ${limit}</span>
+        <div class="thread-entries" id="thread-entries">
+          ${thread.map((entry, i) => renderThreadEntry(entry, i, limit)).join('')}
         </div>
-        <div class="image-upload-area">
-          <div class="image-grid" id="image-grid"></div>
-          ${uploadedImages.length < 4 ? `
-            <label class="add-image-btn">
-              <input type="file" accept="image/*" multiple hidden id="image-input" />
-              + Add images (or paste / drop)
-            </label>
-          ` : ''}
-        </div>
+        <button class="add-thread-btn" id="add-thread-btn">+ Add to thread</button>
         <div class="platform-settings">
           ${renderBlueskySettings()}
           ${renderFediSettings()}
@@ -141,12 +121,36 @@
         </div>
         ${showDraftsList ? renderDraftsList() : ''}
         <div class="post-actions">
-          <button class="post-btn primary" id="post-btn" disabled>Post now</button>
+          <button class="post-btn primary" id="post-btn" disabled>${thread.length > 1 ? 'Post thread' : 'Post now'}</button>
           <button class="post-btn secondary" id="schedule-toggle">${showSchedule ? 'Cancel' : 'Schedule'}</button>
         </div>
         ${showSchedule ? '<div class="schedule-picker"><input type="datetime-local" id="schedule-time" /></div>' : ''}
-      </div>
-    `;
+      </div>`;
+  }
+
+  function renderThreadEntry(entry, idx, limit) {
+    const len = entry.text.length;
+    const isOnly = thread.length === 1;
+    return `
+      <div class="thread-entry" data-entry="${idx}">
+        ${!isOnly ? `<div class="thread-entry-header">
+          <span class="thread-entry-num">${idx + 1}/${thread.length}</span>
+          <button class="thread-entry-remove" data-remove-entry="${idx}">&times;</button>
+        </div>` : ''}
+        <div class="compose-area">
+          <textarea class="compose-text" data-entry-text="${idx}" placeholder="${idx === 0 ? "What's on your mind?" : 'Continue thread...'}">${esc(entry.text)}</textarea>
+          <span class="char-count ${len > limit ? 'over' : ''}">${len} / ${limit}</span>
+        </div>
+        <div class="image-upload-area" data-entry-images="${idx}">
+          <div class="image-grid" data-img-grid="${idx}"></div>
+          ${entry.images.length < 4 ? `
+            <label class="add-image-btn">
+              <input type="file" accept="image/*" multiple hidden data-file-input="${idx}" />
+              + Add images
+            </label>
+          ` : ''}
+        </div>
+      </div>`;
   }
 
   function renderBlueskySettings() {
@@ -166,7 +170,7 @@
             <label>Replies</label>
             <select id="bsky-threadgate">
               ${['everyone','mentioned','followers','following','nobody'].map(v =>
-                `<option value="${v}" ${bskyThreadgate === v ? 'selected' : ''}>${v === 'following' ? 'People I follow' : v.charAt(0).toUpperCase() + v.slice(1)}</option>`
+                `<option value="${v}" ${bskyThreadgate === v ? 'selected' : ''}>${{everyone:'Everyone',mentioned:'Mentioned only',followers:'Followers',following:'People I follow',nobody:'Nobody'}[v]}</option>`
               ).join('')}
             </select>
           </div>
@@ -211,82 +215,52 @@
   function renderDraftsList() {
     if (!stashedDrafts.length) return '<div class="drafts-list"><div class="draft-item"><span class="draft-text">No stashed drafts</span></div></div>';
     return `<div class="drafts-list">${stashedDrafts.map(d => {
-      const imgs = d.images ? JSON.parse(d.images) : [];
+      let entries = [];
+      try { entries = JSON.parse(d.thread); } catch {}
+      const allImgs = entries.flatMap(e => e.images || []);
+      const firstText = entries.find(e => (e.text || '').trim())?.text || '';
+      const label = firstText ? firstText.slice(0, 60) : (allImgs.length ? `(${allImgs.length} image${allImgs.length > 1 ? 's' : ''})` : '(empty)');
+      const countLabel = entries.length > 1 ? `<span class="badge badge-both">${entries.length} posts</span>` : '';
       return `
         <div class="draft-item">
-          ${imgs.length ? `<div class="draft-thumbs">${imgs.map(i =>
+          ${allImgs.length ? `<div class="draft-thumbs">${allImgs.slice(0, 4).map(i =>
             `<img class="draft-thumb" src="/api/posts/images/${i.filename}" data-draft-img="/api/posts/images/${i.filename}" />`
           ).join('')}</div>` : ''}
-          <span class="draft-text">${esc(d.text ? d.text.slice(0, 60) : (imgs.length ? `(${imgs.length} image${imgs.length > 1 ? 's' : ''})` : '(empty)'))}</span>
+          <span class="draft-text">${countLabel} ${esc(label)}</span>
           <button data-draft-restore="${d.id}">Restore</button>
           <button data-draft-delete="${d.id}">Delete</button>
         </div>`;
     }).join('')}</div>`;
   }
 
-  // ── Image grid ──
-  function renderImageGrid() {
-    const grid = $('#image-grid');
-    if (!grid) return;
-    grid.innerHTML = uploadedImages.map((img, i) => `
-      <div class="image-preview ${dragIdx === i ? 'dragging' : ''}" draggable="true" data-idx="${i}">
-        <img src="/api/posts/images/${img.filename}" alt="" data-view-idx="${i}" />
-        <div class="img-actions">
-          ${i > 0 ? `<button class="img-action-btn" data-move="${i}" data-dir="-1">&larr;</button>` : ''}
-          ${i < uploadedImages.length - 1 ? `<button class="img-action-btn" data-move="${i}" data-dir="1">&rarr;</button>` : ''}
-          <button class="img-action-btn" data-remove="${i}">&times;</button>
+  // ── Image grid per entry ──
+  function renderAllImageGrids() {
+    thread.forEach((entry, idx) => {
+      const grid = $(`[data-img-grid="${idx}"]`);
+      if (!grid) return;
+      grid.innerHTML = entry.images.map((img, i) => `
+        <div class="image-preview" draggable="true" data-entry="${idx}" data-idx="${i}">
+          <img src="/api/posts/images/${img.filename}" alt="" data-view-entry="${idx}" data-view-idx="${i}" />
+          <div class="img-actions">
+            ${i > 0 ? `<button class="img-action-btn" data-move-entry="${idx}" data-move="${i}" data-dir="-1">&larr;</button>` : ''}
+            ${i < entry.images.length - 1 ? `<button class="img-action-btn" data-move-entry="${idx}" data-move="${i}" data-dir="1">&rarr;</button>` : ''}
+            <button class="img-action-btn" data-remove-img-entry="${idx}" data-remove="${i}">&times;</button>
+          </div>
+          <div class="alt-row">
+            <textarea class="alt-input" data-alt-entry="${idx}" data-alt-idx="${i}" placeholder="Alt text..." rows="1">${esc(img.alt || '')}</textarea>
+            <button class="auto-alt-btn ${isGeneratingAlt(idx, i) ? 'generating' : ''}" data-auto-alt-entry="${idx}" data-auto-alt="${i}">${isGeneratingAlt(idx, i) ? 'Stop' : 'AI'}</button>
+          </div>
         </div>
-        <div class="alt-row">
-          <textarea class="alt-input" data-alt-idx="${i}" placeholder="Alt text..." rows="1">${esc(img.alt || '')}</textarea>
-          <button class="auto-alt-btn" data-auto-alt="${i}">AI</button>
-        </div>
-      </div>
-    `).join('');
+      `).join('');
+    });
   }
 
-  // ── Composer state save/restore for rerender ──
-  function saveState() {
-    return {
-      text: $('#compose-text')?.value ?? lastSavedText,
-      schedTime: $('#schedule-time')?.value || '',
-      selStart: $('#compose-text')?.selectionStart,
-      selEnd: $('#compose-text')?.selectionEnd,
-    };
-  }
-
-  function restoreState(s) {
-    const ta = $('#compose-text');
-    if (ta) {
-      ta.value = s.text;
-      if (s.selStart != null) ta.setSelectionRange(s.selStart, s.selEnd);
-    }
-    if ($('#schedule-time') && s.schedTime) $('#schedule-time').value = s.schedTime;
-    updateCharCount();
-  }
-
-  function rerenderComposer() {
-    const s = saveState();
-    lastSavedText = s.text; // keep in sync so renderComposer uses current text
-    syncSettingsFromDOM();
-    const el = $('.composer');
-    if (el) {
-      el.outerHTML = renderComposer();
-      renderImageGrid();
-      bindComposerEvents();
-      restoreState(s);
-    }
-  }
-
-  // Clean render from current state — no save/restore cycle
-  // Use after stash/restore where state vars are already set
-  function freshRenderComposer() {
-    const el = $('.composer');
-    if (el) {
-      el.outerHTML = renderComposer();
-      renderImageGrid();
-      bindComposerEvents();
-      updateCharCount();
-    }
+  // ── State management ──
+  function syncThreadFromDOM() {
+    $$('.compose-text').forEach(ta => {
+      const idx = Number(ta.dataset.entryText);
+      if (thread[idx]) thread[idx].text = ta.value;
+    });
   }
 
   function syncSettingsFromDOM() {
@@ -295,92 +269,123 @@
     const t = $('#bsky-threadgate'); if (t) bskyThreadgate = t.value;
   }
 
+  function rerenderComposer() {
+    syncThreadFromDOM();
+    syncSettingsFromDOM();
+    const el = $('.composer');
+    if (el) {
+      const schedTime = $('#schedule-time')?.value || '';
+      el.outerHTML = renderComposer();
+      renderAllImageGrids();
+      bindComposerEvents();
+      if ($('#schedule-time') && schedTime) $('#schedule-time').value = schedTime;
+      updateAllCharCounts();
+    }
+  }
+
+  function freshRenderComposer() {
+    const el = $('.composer');
+    if (el) {
+      el.outerHTML = renderComposer();
+      renderAllImageGrids();
+      bindComposerEvents();
+      updateAllCharCounts();
+    }
+  }
+
+  function updateAllCharCounts() {
+    const limit = getCharLimit();
+    $$('.compose-text').forEach(ta => {
+      const len = ta.value.length;
+      const cc = ta.closest('.compose-area')?.querySelector('.char-count');
+      if (cc) { cc.textContent = `${len} / ${limit}`; cc.classList.toggle('over', len > limit); }
+    });
+    updatePostBtn();
+  }
+
+  function updatePostBtn() {
+    const pb = $('#post-btn');
+    if (!pb) return;
+    const limit = getCharLimit();
+    const hasContent = thread.some(e => e.text.trim());
+    const overLimit = thread.some(e => e.text.length > limit);
+    pb.disabled = !hasContent || overLimit;
+  }
+
   // ── Event binding ──
   function bindComposerEvents() {
-    renderImageGrid();
+    renderAllImageGrids();
 
     // Targets
     $$('.target-btn').forEach(b => b.addEventListener('click', () => { target = b.dataset.target; triggerAutosave(); rerenderComposer(); }));
 
-    // Textarea
-    const ta = $('#compose-text');
-    if (ta) {
-      ta.addEventListener('input', () => { updateCharCount(); triggerAutosave(); });
-      // Paste images
-      ta.addEventListener('paste', handlePaste);
-      // Drag & drop on textarea
+    // Textareas
+    $$('.compose-text').forEach(ta => {
+      ta.addEventListener('input', () => {
+        const idx = Number(ta.dataset.entryText);
+        thread[idx].text = ta.value;
+        updateAllCharCounts();
+        triggerAutosave();
+      });
+      ta.addEventListener('paste', e => handlePaste(e, Number(ta.dataset.entryText)));
       ta.addEventListener('dragover', e => { e.preventDefault(); ta.classList.add('drag-over'); });
       ta.addEventListener('dragleave', () => ta.classList.remove('drag-over'));
-      ta.addEventListener('drop', e => { ta.classList.remove('drag-over'); handleDrop(e); });
-      ta.focus();
-    }
+      ta.addEventListener('drop', e => { ta.classList.remove('drag-over'); handleDrop(e, Number(ta.dataset.entryText)); });
+    });
+    // Focus first empty or last
+    const firstEmpty = $$('.compose-text').find(ta => !ta.value);
+    (firstEmpty || $$('.compose-text').pop())?.focus();
 
     // Cancel reply
     const cr = $('.cancel-reply');
     if (cr) cr.addEventListener('click', () => { replyTo = null; triggerAutosave(); rerenderComposer(); });
 
-    // File input
-    const fi = $('#image-input');
-    if (fi) fi.addEventListener('change', e => uploadFiles(Array.from(e.target.files)));
+    // File inputs
+    $$('[data-file-input]').forEach(fi => fi.addEventListener('change', e => uploadFiles(Array.from(e.target.files), Number(fi.dataset.fileInput))));
 
-    // Image grid events
-    const grid = $('#image-grid');
-    if (grid) {
+    // Image grid events (delegated on each grid)
+    $$('[data-img-grid]').forEach(grid => {
+      const entryIdx = Number(grid.dataset.imgGrid);
       grid.addEventListener('click', e => {
-        // View image
         const viewImg = e.target.closest('[data-view-idx]');
-        if (viewImg) { openLightbox(Number(viewImg.dataset.viewIdx)); return; }
-        // Remove
+        if (viewImg) { openLightbox(Number(viewImg.dataset.viewEntry), Number(viewImg.dataset.viewIdx)); return; }
         const rm = e.target.closest('[data-remove]');
-        if (rm) { uploadedImages.splice(Number(rm.dataset.remove), 1); triggerAutosave(); rerenderComposer(); return; }
-        // Move
+        if (rm) { thread[Number(rm.dataset.removeImgEntry)].images.splice(Number(rm.dataset.remove), 1); triggerAutosave(); rerenderComposer(); return; }
         const mv = e.target.closest('[data-move]');
         if (mv) {
-          const i = Number(mv.dataset.move), d = Number(mv.dataset.dir);
-          [uploadedImages[i], uploadedImages[i + d]] = [uploadedImages[i + d], uploadedImages[i]];
-          triggerAutosave(); renderImageGrid(); return;
+          const eIdx = Number(mv.dataset.moveEntry), i = Number(mv.dataset.move), d = Number(mv.dataset.dir);
+          const imgs = thread[eIdx].images;
+          [imgs[i], imgs[i + d]] = [imgs[i + d], imgs[i]];
+          triggerAutosave(); renderAllImageGrids(); return;
         }
-        // Auto alt (toggle generate/cancel)
         const aa = e.target.closest('[data-auto-alt]');
-        if (aa) { generateAlt(Number(aa.dataset.autoAlt)); return; }
+        if (aa) { generateAlt(Number(aa.dataset.autoAltEntry), Number(aa.dataset.autoAlt)); return; }
       });
       grid.addEventListener('input', e => {
         const ai = e.target.closest('[data-alt-idx]');
-        if (ai) { uploadedImages[Number(ai.dataset.altIdx)].alt = ai.value; triggerAutosave(); }
+        if (ai) { thread[Number(ai.dataset.altEntry)].images[Number(ai.dataset.altIdx)].alt = ai.value; triggerAutosave(); }
       });
-      // Drag reorder
-      grid.addEventListener('dragstart', e => {
-        const card = e.target.closest('.image-preview');
-        if (card) { dragIdx = Number(card.dataset.idx); card.classList.add('dragging'); }
-      });
-      grid.addEventListener('dragover', e => {
-        e.preventDefault();
-        const card = e.target.closest('.image-preview');
-        $$('.image-preview', grid).forEach(c => c.classList.remove('drag-target'));
-        if (card) card.classList.add('drag-target');
-      });
-      grid.addEventListener('drop', e => {
-        const card = e.target.closest('.image-preview');
-        if (card && dragIdx !== null) {
-          const to = Number(card.dataset.idx);
-          if (dragIdx !== to) {
-            const [item] = uploadedImages.splice(dragIdx, 1);
-            uploadedImages.splice(to, 0, item);
-            triggerAutosave();
-          }
-        }
-        dragIdx = null;
-        renderImageGrid();
-      });
-      grid.addEventListener('dragend', () => { dragIdx = null; renderImageGrid(); });
-    }
+    });
+
+    // Add thread entry
+    const atb = $('#add-thread-btn');
+    if (atb) atb.addEventListener('click', () => { syncThreadFromDOM(); thread.push({ text: '', images: [] }); triggerAutosave(); rerenderComposer(); });
+
+    // Remove thread entry
+    $$('[data-remove-entry]').forEach(b => b.addEventListener('click', () => {
+      const idx = Number(b.dataset.removeEntry);
+      if (thread.length <= 1) return;
+      syncThreadFromDOM();
+      thread.splice(idx, 1);
+      triggerAutosave();
+      rerenderComposer();
+    }));
 
     // Collapsible toggles
     $$('[data-toggle]').forEach(h => h.addEventListener('click', () => {
       if (h.dataset.toggle === 'bsky') bskySettingsOpen = !bskySettingsOpen;
       else fediSettingsOpen = !fediSettingsOpen;
-      syncSettingsFromDOM();
-      rerenderComposer();
+      syncSettingsFromDOM(); rerenderComposer();
     }));
 
     // Label chips
@@ -390,7 +395,7 @@
       syncSettingsFromDOM(); rerenderComposer();
     }));
 
-    // Settings changes
+    // Settings
     const bskyTg = $('#bsky-threadgate');
     if (bskyTg) bskyTg.addEventListener('change', () => { bskyThreadgate = bskyTg.value; rerenderComposer(); });
     const fediVis = $('#fedi-visibility');
@@ -411,166 +416,128 @@
     const sb = $('#stash-btn');
     if (sb) sb.addEventListener('click', handleStash);
 
-    // Draft count
+    // Draft count & list
     loadDraftCount();
     const dc = $('#draft-count');
     if (dc) dc.addEventListener('click', toggleDraftsList);
-
-    // Draft list buttons
     $$('[data-draft-restore]').forEach(b => b.addEventListener('click', () => restoreDraft(b.dataset.draftRestore)));
     $$('[data-draft-delete]').forEach(b => b.addEventListener('click', () => deleteDraft(b.dataset.draftDelete)));
-    $$('[data-draft-img]').forEach(img => img.addEventListener('click', e => {
-      e.stopPropagation();
-      openStaticLightbox(img.dataset.draftImg);
-    }));
+    $$('[data-draft-img]').forEach(img => img.addEventListener('click', e => { e.stopPropagation(); openStaticLightbox(img.dataset.draftImg); }));
   }
 
   // ── Image handling ──
-  function handlePaste(e) {
-    const items = Array.from(e.clipboardData?.items || []);
-    const imageItems = items.filter(i => i.type.startsWith('image/'));
-    if (!imageItems.length) return;
+  function handlePaste(e, entryIdx) {
+    const items = Array.from(e.clipboardData?.items || []).filter(i => i.type.startsWith('image/'));
+    if (!items.length) return;
     e.preventDefault();
-    const files = imageItems.map(i => i.getAsFile()).filter(Boolean);
-    uploadFiles(files);
+    uploadFiles(items.map(i => i.getAsFile()).filter(Boolean), entryIdx);
   }
 
-  function handleDrop(e) {
+  function handleDrop(e, entryIdx) {
     e.preventDefault();
     const files = Array.from(e.dataTransfer?.files || []).filter(f => f.type.startsWith('image/'));
-    if (files.length) uploadFiles(files);
+    if (files.length) uploadFiles(files, entryIdx);
   }
 
-  let uploading = false;
-  let uploadProgress = 0;
-
-  async function uploadFiles(files) {
-    const slots = 4 - uploadedImages.length;
-    if (slots <= 0) { toast('Max 4 images', 'error'); return; }
-    if (uploading) { toast('Upload in progress', 'error'); return; }
+  let uploadingFlag = false;
+  async function uploadFiles(files, entryIdx) {
+    const entry = thread[entryIdx];
+    if (!entry) return;
+    const slots = 4 - entry.images.length;
+    if (slots <= 0) { toast('Max 4 images per post', 'error'); return; }
+    if (uploadingFlag) { toast('Upload in progress', 'error'); return; }
     files = files.slice(0, slots);
     const totalMB = files.reduce((s, f) => s + f.size, 0) / 1024 / 1024;
 
     const formData = new FormData();
     for (const f of files) formData.append('images', f);
 
-    uploading = true;
+    uploadingFlag = true;
+    uploadTargetIdx = entryIdx;
     uploadProgress = 0;
-    showUploadProgress();
+    showUploadProgress(entryIdx);
 
     try {
       const data = await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/posts/images');
         xhr.upload.addEventListener('progress', e => {
-          if (e.lengthComputable) {
-            uploadProgress = e.loaded / e.total;
-            showUploadProgress();
-          }
+          if (e.lengthComputable) { uploadProgress = e.loaded / e.total; showUploadProgress(entryIdx); }
         });
         xhr.addEventListener('load', () => {
-          try {
-            const json = JSON.parse(xhr.responseText);
-            if (xhr.status >= 400) reject(new Error(json.error || 'Upload failed'));
-            else resolve(json);
-          } catch { reject(new Error('Upload failed')); }
+          try { const j = JSON.parse(xhr.responseText); xhr.status >= 400 ? reject(new Error(j.error || 'Upload failed')) : resolve(j); }
+          catch { reject(new Error('Upload failed')); }
         });
         xhr.addEventListener('error', () => reject(new Error('Upload failed')));
         xhr.send(formData);
       });
-
-      for (const img of data) uploadedImages.push({ ...img, alt: '' });
+      for (const img of data) entry.images.push({ ...img, alt: '' });
       triggerAutosave();
       toast(`Uploaded ${files.length} image${files.length > 1 ? 's' : ''} (${totalMB.toFixed(1)}MB)`, 'success');
-    } catch (err) {
-      toast(err.message || 'Image upload failed', 'error');
-    } finally {
-      uploading = false;
-      rerenderComposer();
-    }
+    } catch (err) { toast(err.message || 'Upload failed', 'error'); }
+    finally { uploadingFlag = false; rerenderComposer(); }
   }
 
-  function showUploadProgress() {
-    let bar = $('#upload-progress');
+  function showUploadProgress(entryIdx) {
+    const area = $(`[data-entry-images="${entryIdx}"]`);
+    if (!area) return;
+    let bar = area.querySelector('.upload-progress');
     if (!bar) {
-      const area = $('.image-upload-area');
-      if (!area) return;
       bar = document.createElement('div');
-      bar.id = 'upload-progress';
       bar.className = 'upload-progress';
       bar.innerHTML = '<div class="upload-progress-bar"></div><span class="upload-progress-text"></span>';
       area.prepend(bar);
     }
     const pct = Math.round(uploadProgress * 100);
     bar.querySelector('.upload-progress-bar').style.width = pct + '%';
-    bar.querySelector('.upload-progress-text').textContent =
-      pct < 100 ? `Uploading... ${pct}%` : 'Processing...';
+    bar.querySelector('.upload-progress-text').textContent = pct < 100 ? `Uploading... ${pct}%` : 'Processing...';
   }
 
-  // Track per-image generation state: { [idx]: AbortController }
-  const altGenerating = {};
+  // ── Alt text generation ──
+  function altKey(eIdx, iIdx) { return `${eIdx}-${iIdx}`; }
+  function isGeneratingAlt(eIdx, iIdx) { return !!altGenerating[altKey(eIdx, iIdx)]; }
 
-  function isGeneratingAlt(idx) { return !!altGenerating[idx]; }
-
-  async function generateAlt(idx) {
-    // If already generating, cancel it
-    if (altGenerating[idx]) {
-      altGenerating[idx].abort();
-      delete altGenerating[idx];
-      updateAltUI();
-      return;
-    }
+  async function generateAlt(entryIdx, imgIdx) {
+    const key = altKey(entryIdx, imgIdx);
+    if (altGenerating[key]) { altGenerating[key].abort(); delete altGenerating[key]; updateAltUI(); return; }
 
     const controller = new AbortController();
-    altGenerating[idx] = controller;
+    altGenerating[key] = controller;
     updateAltUI();
 
     try {
-      const res = await fetch(`/api/posts/images/${uploadedImages[idx].filename}/alt`, {
-        method: 'POST',
-        signal: controller.signal,
-      });
+      const img = thread[entryIdx].images[imgIdx];
+      const res = await fetch(`/api/posts/images/${img.filename}/alt`, { method: 'POST', signal: controller.signal });
       const data = await res.json();
       if (data.alt) {
-        uploadedImages[idx].alt = data.alt;
-        // Update lightbox if open
+        thread[entryIdx].images[imgIdx].alt = data.alt;
         const lbInput = document.querySelector('.lightbox-alt-input');
-        if (lbInput && document.querySelector('.lightbox')?.dataset.idx == idx) {
+        const lb = document.querySelector('.lightbox');
+        if (lbInput && lb && lb.dataset.entry == entryIdx && lb.dataset.idx == imgIdx) {
           lbInput.value = data.alt;
           lbInput.style.height = 'auto'; lbInput.style.height = lbInput.scrollHeight + 'px';
         }
         triggerAutosave();
-      } else {
-        toast('Alt text generation failed', 'error');
-      }
-    } catch (err) {
-      if (err.name !== 'AbortError') toast('Alt text generation failed', 'error');
-    } finally {
-      delete altGenerating[idx];
-      updateAltUI();
-      renderImageGrid();
-    }
+      } else toast('Alt text generation failed', 'error');
+    } catch (err) { if (err.name !== 'AbortError') toast('Alt text generation failed', 'error'); }
+    finally { delete altGenerating[key]; updateAltUI(); renderAllImageGrids(); }
   }
 
-  // Update all visible alt-related UI to reflect generation state
   function updateAltUI() {
-    // Grid buttons
-    $$('[data-auto-alt]').forEach(btn => {
-      const i = Number(btn.dataset.autoAlt);
-      const gen = isGeneratingAlt(i);
+    $$('.auto-alt-btn').forEach(btn => {
+      const e = Number(btn.dataset.autoAltEntry), i = Number(btn.dataset.autoAlt);
+      const gen = isGeneratingAlt(e, i);
       btn.textContent = gen ? 'Stop' : 'AI';
       btn.classList.toggle('generating', gen);
     });
-    // Grid alt inputs — readonly while generating
-    $$('[data-alt-idx]').forEach(ta => {
-      ta.classList.toggle('alt-busy', isGeneratingAlt(Number(ta.dataset.altIdx)));
+    $$('.alt-input').forEach(ta => {
+      const e = Number(ta.dataset.altEntry), i = Number(ta.dataset.altIdx);
+      ta.classList.toggle('alt-busy', isGeneratingAlt(e, i));
     });
-    // Lightbox button if open
     const lbBtn = document.querySelector('.lightbox-ai-btn');
     const lb = document.querySelector('.lightbox');
     if (lbBtn && lb) {
-      const i = Number(lb.dataset.idx);
-      const gen = isGeneratingAlt(i);
+      const gen = isGeneratingAlt(Number(lb.dataset.entry), Number(lb.dataset.idx));
       lbBtn.textContent = gen ? 'Stop generating' : 'Generate alt text';
       lbBtn.classList.toggle('generating', gen);
       const lbInput = document.querySelector('.lightbox-alt-input');
@@ -579,13 +546,14 @@
   }
 
   // ── Lightbox ──
-  function openLightbox(idx) {
-    const img = uploadedImages[idx];
+  function openLightbox(entryIdx, imgIdx) {
+    const img = thread[entryIdx]?.images[imgIdx];
     if (!img) return;
-    const gen = isGeneratingAlt(idx);
+    const gen = isGeneratingAlt(entryIdx, imgIdx);
     const lb = document.createElement('div');
     lb.className = 'lightbox';
-    lb.dataset.idx = idx;
+    lb.dataset.entry = entryIdx;
+    lb.dataset.idx = imgIdx;
     lb.innerHTML = `
       <div class="lightbox-content">
         <img src="/api/posts/images/${img.filename}" />
@@ -593,22 +561,21 @@
           <textarea class="lightbox-alt-input ${gen ? 'alt-busy' : ''}" placeholder="Alt text...">${esc(img.alt || '')}</textarea>
           <button class="lightbox-ai-btn ${gen ? 'generating' : ''}">${gen ? 'Stop generating' : 'Generate alt text'}</button>
         </div>
-      </div>
-    `;
-    lb.addEventListener('click', e => { if (e.target === lb) closeLightbox(lb, idx); });
-    const onKey = e => { if (e.key === 'Escape') { closeLightbox(lb, idx); document.removeEventListener('keydown', onKey); } };
+      </div>`;
+    lb.addEventListener('click', e => { if (e.target === lb) closeLightbox(lb, entryIdx, imgIdx); });
+    const onKey = e => { if (e.key === 'Escape') { closeLightbox(lb, entryIdx, imgIdx); document.removeEventListener('keydown', onKey); } };
     document.addEventListener('keydown', onKey);
-    lb.querySelector('.lightbox-ai-btn').addEventListener('click', () => generateAlt(idx));
+    lb.querySelector('.lightbox-ai-btn').addEventListener('click', () => generateAlt(entryIdx, imgIdx));
     const lbTa = lb.querySelector('.lightbox-alt-input');
     const autoGrow = () => { lbTa.style.height = 'auto'; lbTa.style.height = lbTa.scrollHeight + 'px'; };
-    lbTa.addEventListener('input', e => { uploadedImages[idx].alt = e.target.value; autoGrow(); triggerAutosave(); });
+    lbTa.addEventListener('input', e => { thread[entryIdx].images[imgIdx].alt = e.target.value; autoGrow(); triggerAutosave(); });
     document.body.appendChild(lb);
-    autoGrow(); // size on open
+    autoGrow();
   }
 
-  function closeLightbox(lb, idx) {
+  function closeLightbox(lb, entryIdx, imgIdx) {
     const ta = lb.querySelector('.lightbox-alt-input');
-    if (ta) { uploadedImages[idx].alt = ta.value; renderImageGrid(); }
+    if (ta) { thread[entryIdx].images[imgIdx].alt = ta.value; renderAllImageGrids(); }
     lb.remove();
   }
 
@@ -622,41 +589,19 @@
     document.body.appendChild(lb);
   }
 
-
-  // ── Char count ──
-  function updateCharCount() {
-    const ta = $('#compose-text'), cc = $('#char-count');
-    if (!ta || !cc) return;
-    const len = ta.value.length, limit = getCharLimit();
-    cc.textContent = `${len} / ${limit}`;
-    cc.classList.toggle('over', len > limit);
-    const pb = $('#post-btn');
-    if (pb) pb.disabled = len === 0 || len > limit;
-  }
-
   // ── Autosave ──
-  function triggerAutosave() {
-    clearTimeout(autosaveTimer);
-    autosaveTimer = setTimeout(doAutosave, 800);
-  }
+  function triggerAutosave() { clearTimeout(autosaveTimer); autosaveTimer = setTimeout(doAutosave, 800); }
 
   async function doAutosave() {
-    const text = $('#compose-text')?.value ?? '';
-    const body = {
-      text,
-      targets: target,
-      images: uploadedImages.map(i => ({ id: i.id, filename: i.filename, mimeType: i.mimeType, alt: i.alt })),
-      parentId: replyTo?.id || null,
-    };
+    syncThreadFromDOM();
     try {
       await fetch('/api/drafts/active', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ thread, targets: target, parentId: replyTo?.id || null }),
       });
-      lastSavedText = text;
       flashAutosave();
-    } catch { /* silent */ }
+    } catch {}
   }
 
   function flashAutosave() {
@@ -675,44 +620,34 @@
   }
 
   async function handleStash() {
-    const text = ($('#compose-text')?.value ?? '').trim();
-    if (!text && !uploadedImages.length) { toast('Nothing to stash', 'error'); return; }
-    // Save current state first
+    syncThreadFromDOM();
+    const hasContent = thread.some(e => (e.text || '').trim() || e.images.length);
+    if (!hasContent) { toast('Nothing to stash', 'error'); return; }
     syncSettingsFromDOM();
     await doAutosave();
     const res = await fetch('/api/drafts/stash', { method: 'POST' });
     const data = await res.json();
     if (data.stashed) {
       toast('Draft stashed', 'success');
-      lastSavedText = '';
-      uploadedImages = [];
-      replyTo = null;
-      showDraftsList = false;
+      thread = [{ text: '', images: [] }];
+      replyTo = null; showDraftsList = false;
       freshRenderComposer();
       loadDraftCount();
     }
   }
 
-  function toggleDraftsList() {
-    showDraftsList = !showDraftsList;
-    syncSettingsFromDOM();
-    rerenderComposer();
-  }
+  function toggleDraftsList() { showDraftsList = !showDraftsList; syncThreadFromDOM(); syncSettingsFromDOM(); rerenderComposer(); }
 
   async function restoreDraft(id) {
-    // Stash current if non-empty (don't lose work)
-    const text = ($('#compose-text')?.value ?? '').trim();
-    if (text.length > 0 || uploadedImages.length > 0) {
-      syncSettingsFromDOM();
-      await doAutosave();
-      await fetch('/api/drafts/stash', { method: 'POST' });
-    }
+    syncThreadFromDOM();
+    const hasContent = thread.some(e => (e.text || '').trim() || e.images.length);
+    if (hasContent) { syncSettingsFromDOM(); await doAutosave(); await fetch('/api/drafts/stash', { method: 'POST' }); }
 
     const res = await fetch(`/api/drafts/${id}/restore`, { method: 'POST' });
     const draft = await res.json();
     target = draft.targets || 'both';
-    lastSavedText = draft.text || '';
-    uploadedImages = draft.images ? JSON.parse(draft.images) : [];
+    try { thread = JSON.parse(draft.thread); } catch { thread = [{ text: '', images: [] }]; }
+    if (!thread.length) thread = [{ text: '', images: [] }];
     replyTo = draft.parent_id ? { id: draft.parent_id, text: '(restored draft)', targets: target } : null;
     showDraftsList = false;
     freshRenderComposer();
@@ -723,23 +658,22 @@
   async function deleteDraft(id) {
     await fetch(`/api/drafts/${id}`, { method: 'DELETE' });
     await loadDraftCount();
-    syncSettingsFromDOM();
-    rerenderComposer();
+    syncThreadFromDOM(); syncSettingsFromDOM(); rerenderComposer();
     toast('Draft deleted', 'success');
   }
 
   // ── Post ──
   async function handlePost() {
-    const text = $('#compose-text')?.value?.trim();
-    if (!text) return;
+    syncThreadFromDOM(); syncSettingsFromDOM();
+    const hasContent = thread.some(e => e.text.trim());
+    if (!hasContent) return;
     const pb = $('#post-btn');
     pb.disabled = true;
-    pb.textContent = showSchedule ? 'Scheduling...' : 'Posting...';
+    pb.textContent = showSchedule ? 'Scheduling...' : (thread.length > 1 ? 'Posting thread...' : 'Posting...');
 
-    syncSettingsFromDOM();
     const body = {
-      text, targets: target,
-      images: uploadedImages.map(i => ({ id: i.id, filename: i.filename, mimeType: i.mimeType, alt: i.alt })),
+      thread: thread.map(e => ({ text: e.text, images: e.images.map(i => ({ id: i.id, filename: i.filename, mimeType: i.mimeType, alt: i.alt })) })),
+      targets: target,
       visibility: fediVisibility,
       contentWarning: fediCW || '',
       parentId: replyTo?.id || null,
@@ -748,10 +682,7 @@
       blueskyThreadgate: bskyThreadgate,
     };
 
-    if (showSchedule && !body.scheduledAt) {
-      toast('Pick a time', 'error');
-      pb.disabled = false; pb.textContent = 'Schedule'; return;
-    }
+    if (showSchedule && !body.scheduledAt) { toast('Pick a time', 'error'); pb.disabled = false; pb.textContent = 'Schedule'; return; }
 
     try {
       const res = await fetch('/api/posts', {
@@ -762,7 +693,12 @@
       const data = await res.json();
       if (!res.ok) { toast(data.error || 'Failed', 'error'); pb.disabled = false; pb.textContent = showSchedule ? 'Schedule' : 'Post now'; return; }
 
-      if (data.result) {
+      // Check results
+      if (data.thread) {
+        const failures = data.thread.filter(r => r.result && ((r.result.bluesky && !r.result.bluesky.success) || (r.result.fedi && !r.result.fedi.success)));
+        if (failures.length) toast(`Thread posted with ${failures.length} error(s)`, 'error');
+        else toast(`Thread posted (${data.thread.length} posts)!`, 'success');
+      } else if (data.result) {
         const b = data.result.bluesky, f = data.result.fedi;
         if (b && !b.success && f && f.success) toast('Posted to Fedi, Bluesky failed', 'error');
         else if (f && !f.success && b && b.success) toast('Posted to Bluesky, Fedi failed', 'error');
@@ -770,13 +706,12 @@
         else toast('Posted!', 'success');
       } else toast('Scheduled!', 'success');
 
-      // Clear draft
+      clearTimeout(autosaveTimer);
       await fetch('/api/drafts/active', { method: 'DELETE' });
-      replyTo = null; uploadedImages = []; showSchedule = false;
+      replyTo = null; thread = [{ text: '', images: [] }]; showSchedule = false;
       fediCW = ''; bskyLabels = []; bskyThreadgate = 'everyone'; fediVisibility = 'public';
       bskySettingsOpen = false; fediSettingsOpen = false;
-      lastSavedText = '';
-      rerenderComposer();
+      freshRenderComposer();
       loadTimeline();
     } catch {
       toast('Network error', 'error');
@@ -839,15 +774,14 @@
         const p = posts.find(x => x.id === id);
         replyTo = { id, text: p.text, targets: p.targets };
         target = p.targets;
-        triggerAutosave();
-        rerenderComposer();
+        triggerAutosave(); rerenderComposer();
         window.scrollTo({ top: 0, behavior: 'smooth' });
       } else if (act === 'retry') {
         b.disabled = true; b.textContent = 'Retrying...';
         await fetch(`/api/posts/${id}/retry`, { method: 'POST' });
         toast('Retried', 'success'); loadTimeline();
       } else if (act === 'delete') {
-        if (confirm('Delete this post? (only removes from Crosspost, not from platforms)')) {
+        if (await confirmModal('Delete this post? Only removes from Crosspost, not from platforms.')) {
           await fetch(`/api/posts/${id}`, { method: 'DELETE' });
           toast('Deleted', 'success'); loadTimeline();
         }
@@ -855,7 +789,6 @@
     }));
   }
 
-  // ── Thread view ──
   async function renderThread(postId) {
     const area = $('#timeline-area');
     area.innerHTML = '<div class="loading">Loading...</div>';
@@ -880,7 +813,7 @@
         b.disabled = true; await fetch(`/api/posts/${b.dataset.postId}/retry`, { method: 'POST' });
         renderThread(postId);
       } else if (b.dataset.action === 'delete') {
-        if (confirm('Delete this post? (only removes from Crosspost, not from platforms)')) {
+        if (await confirmModal('Delete this post? Only removes from Crosspost, not from platforms.')) {
           await fetch(`/api/posts/${b.dataset.postId}`, { method: 'DELETE' });
           toast('Deleted', 'success'); loadTimeline();
         }
@@ -899,12 +832,36 @@
     if (ms < 86400000) return `${Math.floor(ms / 3600000)}h ago`;
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
+  function confirmModal(msg) {
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.className = 'confirm-overlay';
+      overlay.innerHTML = `
+        <div class="confirm-dialog">
+          <p class="confirm-msg">${esc(msg)}</p>
+          <div class="confirm-actions">
+            <button class="confirm-cancel">Cancel</button>
+            <button class="confirm-ok">Delete</button>
+          </div>
+        </div>`;
+      const close = val => { overlay.remove(); resolve(val); };
+      overlay.querySelector('.confirm-cancel').addEventListener('click', () => close(false));
+      overlay.querySelector('.confirm-ok').addEventListener('click', () => close(true));
+      overlay.addEventListener('click', e => { if (e.target === overlay) close(false); });
+      document.addEventListener('keydown', function onKey(e) {
+        if (e.key === 'Escape') { close(false); document.removeEventListener('keydown', onKey); }
+      });
+      document.body.appendChild(overlay);
+      overlay.querySelector('.confirm-cancel').focus();
+    });
+  }
+
   function toast(msg, type = 'success') {
     const el = document.createElement('div');
     el.className = `toast ${type}`;
     el.textContent = msg;
     document.body.appendChild(el);
-    setTimeout(() => el.remove(), 3500);
+    setTimeout(() => el.remove(), 6000);
   }
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

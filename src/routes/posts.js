@@ -81,43 +81,57 @@ router.post('/images/:filename/alt', async (req, res) => {
   }
 });
 
-// Create a post
+// Create a post or thread
+// Accepts { thread: [{ text, images }], targets, parentId, ... }
+// or legacy { text, images, targets, ... } for single post
 router.post('/', async (req, res) => {
-  const { text, targets, images = [], parentId, visibility, contentWarning, scheduledAt, blueskyLabels, blueskyThreadgate } = req.body;
+  const { thread, text, targets, images = [], parentId, visibility, contentWarning, scheduledAt, blueskyLabels, blueskyThreadgate } = req.body;
 
-  if (!text || !targets) return res.status(400).json({ error: 'text and targets are required' });
+  // Normalize to thread format
+  const entries = thread || [{ text, images }];
+  if (!entries.length || !entries[0].text) return res.status(400).json({ error: 'text is required' });
+  if (!targets) return res.status(400).json({ error: 'targets is required' });
   if (!['bluesky', 'fedi', 'both'].includes(targets)) return res.status(400).json({ error: 'targets must be bluesky, fedi, or both' });
 
   const db = getDb();
-  const postId = uuidv4();
+  const results = [];
+  let prevPostId = parentId || null;
 
-  db.prepare(`
-    INSERT INTO posts (id, text, targets, parent_id, visibility, content_warning, scheduled_at, bluesky_labels, bluesky_threadgate)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(postId, text, targets, parentId || null, visibility || 'public', contentWarning || null, scheduledAt || null,
-    blueskyLabels?.length ? JSON.stringify(blueskyLabels) : null,
-    blueskyThreadgate || 'everyone');
+  for (let idx = 0; idx < entries.length; idx++) {
+    const entry = entries[idx];
+    const postId = uuidv4();
+    const entryImages = entry.images || [];
 
-  // Link images to post
-  for (let i = 0; i < images.length; i++) {
-    const img = images[i];
     db.prepare(`
-      INSERT INTO images (id, post_id, filename, alt_text, mime_type, sort_order)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(img.id, postId, img.filename, img.alt || '', img.mimeType, i);
+      INSERT INTO posts (id, text, targets, parent_id, visibility, content_warning, scheduled_at, bluesky_labels, bluesky_threadgate)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(postId, entry.text, targets, prevPostId, visibility || 'public', contentWarning || null, scheduledAt || null,
+      blueskyLabels?.length ? JSON.stringify(blueskyLabels) : null,
+      blueskyThreadgate || 'everyone');
+
+    for (let i = 0; i < entryImages.length; i++) {
+      const img = entryImages[i];
+      db.prepare(`
+        INSERT INTO images (id, post_id, filename, alt_text, mime_type, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(img.id, postId, img.filename, img.alt || '', img.mimeType, i);
+    }
+
+    if (!scheduledAt) {
+      const result = await executePost(postId);
+      const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(postId);
+      const postImages = db.prepare('SELECT * FROM images WHERE post_id = ? ORDER BY sort_order').all(postId);
+      results.push({ post: { ...post, images: postImages }, result });
+    } else {
+      const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(postId);
+      const postImages = db.prepare('SELECT * FROM images WHERE post_id = ? ORDER BY sort_order').all(postId);
+      results.push({ post: { ...post, images: postImages }, scheduled: true });
+    }
+
+    prevPostId = postId;
   }
 
-  // If not scheduled, post immediately
-  if (!scheduledAt) {
-    const result = await executePost(postId);
-    const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(postId);
-    const postImages = db.prepare('SELECT * FROM images WHERE post_id = ? ORDER BY sort_order').all(postId);
-    return res.json({ post: { ...post, images: postImages }, result });
-  }
-
-  const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(postId);
-  const postImages = db.prepare('SELECT * FROM images WHERE post_id = ? ORDER BY sort_order').all(postId);
-  res.json({ post: { ...post, images: postImages }, scheduled: true });
+  res.json(entries.length === 1 ? results[0] : { thread: results });
 });
 
 // List posts

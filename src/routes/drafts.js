@@ -4,7 +4,16 @@ const { getDb } = require('../db');
 
 const router = express.Router();
 
-// Get active draft (the one being composed)
+const EMPTY_THREAD = '[{"text":"","images":[]}]';
+
+function threadHasContent(threadJson) {
+  try {
+    const entries = JSON.parse(threadJson || EMPTY_THREAD);
+    return entries.some(e => (e.text || '').trim() || (e.images && e.images.length > 0));
+  } catch { return false; }
+}
+
+// Get active draft
 router.get('/active', (req, res) => {
   const db = getDb();
   const draft = db.prepare('SELECT * FROM drafts WHERE is_active = 1 LIMIT 1').get();
@@ -14,18 +23,19 @@ router.get('/active', (req, res) => {
 // Upsert active draft (auto-save)
 router.put('/active', (req, res) => {
   const db = getDb();
-  const { text, targets, images, parentId } = req.body;
+  const { thread, targets, parentId } = req.body;
 
   let draft = db.prepare('SELECT * FROM drafts WHERE is_active = 1 LIMIT 1').get();
 
+  const threadJson = thread !== undefined ? JSON.stringify(thread) : undefined;
+
   if (draft) {
     db.prepare(`
-      UPDATE drafts SET text = ?, targets = ?, images = ?, parent_id = ?, updated_at = datetime('now')
+      UPDATE drafts SET thread = ?, targets = ?, parent_id = ?, updated_at = datetime('now')
       WHERE id = ?
     `).run(
-      text ?? draft.text,
+      threadJson ?? draft.thread,
       targets ?? draft.targets,
-      images !== undefined ? JSON.stringify(images) : draft.images,
       parentId !== undefined ? parentId : draft.parent_id,
       draft.id
     );
@@ -33,27 +43,27 @@ router.put('/active', (req, res) => {
   } else {
     const id = uuidv4();
     db.prepare(`
-      INSERT INTO drafts (id, text, targets, images, parent_id, is_active)
-      VALUES (?, ?, ?, ?, ?, 1)
-    `).run(id, text || '', targets || 'both', JSON.stringify(images || []), parentId || null);
+      INSERT INTO drafts (id, thread, targets, parent_id, is_active)
+      VALUES (?, ?, ?, ?, 1)
+    `).run(id, threadJson || EMPTY_THREAD, targets || 'both', parentId || null);
     draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(id);
   }
 
   res.json(draft);
 });
 
-// Stash current draft (deactivate it, keep it saved)
+// Stash current draft
 router.post('/stash', (req, res) => {
   const db = getDb();
   const active = db.prepare('SELECT * FROM drafts WHERE is_active = 1 LIMIT 1').get();
-  if (!active || (!(active.text || '').trim() && (!active.images || active.images === '[]'))) {
+  if (!active || !threadHasContent(active.thread)) {
     return res.json({ stashed: false, message: 'Nothing to stash' });
   }
-  db.prepare('UPDATE drafts SET is_active = 0, updated_at = datetime(\'now\') WHERE id = ?').run(active.id);
+  db.prepare("UPDATE drafts SET is_active = 0, updated_at = datetime('now') WHERE id = ?").run(active.id);
   res.json({ stashed: true, id: active.id });
 });
 
-// Clear active draft (after successful post)
+// Clear active draft
 router.delete('/active', (req, res) => {
   const db = getDb();
   db.prepare('DELETE FROM drafts WHERE is_active = 1').run();
@@ -63,29 +73,28 @@ router.delete('/active', (req, res) => {
 // List stashed drafts (prune empty ones)
 router.get('/', (req, res) => {
   const db = getDb();
-  db.prepare("DELETE FROM drafts WHERE is_active = 0 AND COALESCE(TRIM(text), '') = '' AND (images IS NULL OR images = '[]')").run();
-  const drafts = db.prepare('SELECT * FROM drafts WHERE is_active = 0 ORDER BY updated_at DESC').all();
+  const all = db.prepare('SELECT * FROM drafts WHERE is_active = 0 ORDER BY updated_at DESC').all();
+  const empty = all.filter(d => !threadHasContent(d.thread));
+  for (const d of empty) db.prepare('DELETE FROM drafts WHERE id = ?').run(d.id);
+  const drafts = all.filter(d => threadHasContent(d.thread));
   res.json(drafts);
 });
 
-// Restore a stashed draft (make it active)
+// Restore a stashed draft
 router.post('/:id/restore', (req, res) => {
   const db = getDb();
   const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(req.params.id);
   if (!draft) return res.status(404).json({ error: 'Draft not found' });
 
-  // Delete empty active drafts, stash non-empty ones
   const active = db.prepare('SELECT * FROM drafts WHERE is_active = 1').all();
   for (const a of active) {
-    const hasContent = (a.text || '').trim() || (a.images && a.images !== '[]');
-    if (hasContent) {
+    if (threadHasContent(a.thread)) {
       db.prepare('UPDATE drafts SET is_active = 0 WHERE id = ?').run(a.id);
     } else {
       db.prepare('DELETE FROM drafts WHERE id = ?').run(a.id);
     }
   }
-  // Restore this one
-  db.prepare('UPDATE drafts SET is_active = 1, updated_at = datetime(\'now\') WHERE id = ?').run(draft.id);
+  db.prepare("UPDATE drafts SET is_active = 1, updated_at = datetime('now') WHERE id = ?").run(draft.id);
 
   const restored = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draft.id);
   res.json(restored);

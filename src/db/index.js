@@ -52,10 +52,9 @@ function migrate(db) {
 
     CREATE TABLE IF NOT EXISTS drafts (
       id TEXT PRIMARY KEY,
-      text TEXT NOT NULL DEFAULT '',
+      thread TEXT NOT NULL DEFAULT '[{"text":"","images":[]}]',
       targets TEXT DEFAULT 'both',
       is_active INTEGER NOT NULL DEFAULT 0,
-      images TEXT DEFAULT '[]',
       parent_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
