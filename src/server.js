@@ -34,7 +34,14 @@ app.get('/{*splat}', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
+// Startup validation
+const warnings = [];
+if (!process.env.BLUESKY_HANDLE || !process.env.BLUESKY_APP_PASSWORD) warnings.push('Bluesky credentials not set — Bluesky posting will fail');
+if (!process.env.FEDI_INSTANCE_URL || !process.env.FEDI_ACCESS_TOKEN) warnings.push('Fedi credentials not set — Fedi posting will fail');
+if (!process.env.ANTHROPIC_API_KEY) warnings.push('ANTHROPIC_API_KEY not set — AI alt text will try Claude CLI fallback');
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Crosspost running on port ${PORT}`);
+  warnings.forEach(w => console.warn(`  ⚠ ${w}`));
   scheduler.start();
 });

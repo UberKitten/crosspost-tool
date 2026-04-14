@@ -1,12 +1,7 @@
 FROM node:22-slim
 
-# Install Claude Code CLI dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app
 

@@ -61,24 +61,50 @@ router.post('/images', (req, res, next) => {
   res.json(results);
 });
 
-// Generate alt text for an image
+// Generate alt text for an image (tries Anthropic API, falls back to Claude CLI)
+const ALT_PROMPT = 'This is for a social media post on Bluesky/Mastodon. Write alt text to help non-sighted users understand the image. If there is text, captions, labels, or dialogue, transcribe it. Describe what is depicted factually and neutrally — no opinions, commentary, or editorializing. Keep it concise. Output ONLY the alt text.';
+
 router.post('/images/:filename/alt', async (req, res) => {
   const { filename } = req.params;
   const filePath = path.join(getImageDir(), filename);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Image not found' });
 
+  // Try Anthropic API first
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      const Anthropic = require('@anthropic-ai/sdk');
+      const client = new Anthropic();
+      const imageData = fs.readFileSync(filePath);
+      const ext = path.extname(filename).slice(1).toLowerCase();
+      const mediaType = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' }[ext] || 'image/jpeg';
+      const message = await client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 300,
+        messages: [{ role: 'user', content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageData.toString('base64') } },
+          { type: 'text', text: ALT_PROMPT },
+        ]}],
+      });
+      return res.json({ alt: message.content[0]?.text?.trim() || '' });
+    } catch (err) {
+      console.error('Anthropic API alt text failed:', err.message);
+    }
+  }
+
+  // Fall back to Claude CLI
   try {
     const { execSync } = require('child_process');
-    const prompt = `Use the Read tool to read the image at ${filePath} and write alt text for it. This is for a social media post on Bluesky/Mastodon. The alt text should help non-sighted users understand what's in the image. If there is text, captions, labels, or dialogue in the image, transcribe it. Describe what's depicted factually and neutrally — no opinions, commentary, or editorializing. Just describe what's there. Keep it concise. Output ONLY the alt text, nothing else.`;
+    const prompt = `Use the Read tool to read the image at ${filePath} and write alt text for it. ${ALT_PROMPT}`;
     const result = execSync(
       `claude -p ${JSON.stringify(prompt)} --model sonnet --allowedTools "Read" --max-turns 2`,
       { timeout: 60000, encoding: 'utf-8' }
     );
-    res.json({ alt: result.trim() });
+    return res.json({ alt: result.trim() });
   } catch (err) {
-    console.error('Alt text generation failed:', err.message);
-    res.status(500).json({ error: 'Alt text generation failed' });
+    console.error('Claude CLI alt text failed:', err.message);
   }
+
+  res.status(500).json({ error: 'Alt text generation failed — set ANTHROPIC_API_KEY or install Claude CLI' });
 });
 
 // Create a post or thread
