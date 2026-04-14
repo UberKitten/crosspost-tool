@@ -1,8 +1,8 @@
 # Crosspost
 
-A self-hosted web app for crossposting to Bluesky and Mastodon-compatible fediverse servers (Iceshrimp.NET, Mastodon, Akkoma, etc).
+A simple, clean posting interface that lets you post like normal. Supports adding posts to threads as you go, post privacy, images with alt text, and scheduling. 
 
-Not a scheduler or social media manager. Just a clean posting interface with thread support and platform targeting.
+Self-hosted web app in a Docker container for crossposting to Bluesky and Mastodon-compatible fediverse servers (Iceshrimp.NET, Mastodon, Akkoma, etc). No auth, this expects to be put behind an authenticating reverse proxy.
 
 ## Features
 
