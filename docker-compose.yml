@@ -1,6 +1,8 @@
 services:
   crosspost:
-    build: .
+    image: ghcr.io/uberkitten/crosspost-tool:main
+    # To build locally instead, comment out image and uncomment build:
+    # build: .
     ports:
       - "${PORT:-3000}:3000"
     env_file:
