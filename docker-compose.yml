@@ -7,10 +7,13 @@ services:
       - "${PORT:-3000}:3000"
     env_file:
       - .env
+    environment:
+      - HOME=/home/node
     volumes:
       - ./data:/app/data
-      # Uncomment to use Claude CLI for alt text (requires Claude Code auth on host)
-      # - ~/.claude:/root/.claude:ro
+      # Claude CLI auth (for AI alt text without ANTHROPIC_API_KEY)
+      - ~/.claude:/home/node/.claude:ro
+      - ~/.claude.json:/home/node/.claude.json:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:3000/api/config"]
