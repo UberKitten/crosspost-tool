@@ -1,8 +1,8 @@
 # Crosspost
 
-A simple, clean posting interface that lets you post like normal. Supports adding posts to threads as you go, post privacy, images with alt text, and scheduling. 
+A simple, clean interface that lets you seamlessly post to BlueSky and fedi servers at the same time. Supports adding posts to threads as you go, post privacy, images with alt text, and scheduling. 
 
-Self-hosted web app in a Docker container for crossposting to Bluesky and Mastodon-compatible fediverse servers (Iceshrimp.NET, Mastodon, Akkoma, etc). No auth, this expects to be put behind an authenticating reverse proxy.
+Self-hosted web app in a Docker container, compatible with Bluesky and Mastodon API compatible fediverse servers (Iceshrimp.NET, Mastodon, Akkoma, etc). No auth, this expects to be put behind an authenticating reverse proxy.
 
 ## Features
 
