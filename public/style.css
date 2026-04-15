@@ -149,7 +149,8 @@ header h1 { font-size: 1.3rem; font-weight: 700; }
   color: var(--text);
   font-size: 1rem;
   font-family: inherit;
-  resize: vertical;
+  resize: none;
+  overflow: hidden;
   outline: none;
   transition: border-color 0.15s;
 }

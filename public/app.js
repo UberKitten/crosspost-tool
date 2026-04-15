@@ -324,9 +324,11 @@
       ta.addEventListener('input', () => {
         const idx = Number(ta.dataset.entryText);
         thread[idx].text = ta.value;
+        autoGrowTextarea(ta);
         updateAllCharCounts();
         triggerAutosave();
       });
+      autoGrowTextarea(ta); // size on bind (for restored drafts)
       ta.addEventListener('paste', e => handlePaste(e, Number(ta.dataset.entryText)));
       ta.addEventListener('dragover', e => { e.preventDefault(); ta.classList.add('drag-over'); });
       ta.addEventListener('dragleave', () => ta.classList.remove('drag-over'));
@@ -822,6 +824,7 @@
   }
 
   // ── Helpers ──
+  function autoGrowTextarea(el) { el.style.height = 'auto'; el.style.height = Math.max(el.scrollHeight, 120) + 'px'; }
   function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
   function escAttr(s) { return (s || '').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
   function fmtTime(iso) {
