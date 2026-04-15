@@ -59,6 +59,14 @@
     }
     render();
     setupGlobalDrop();
+
+    // Poll timeline every 30s
+    setInterval(() => { if (document.visibilityState === 'visible') loadTimeline(); }, 30000);
+
+    // Refresh timeline + draft count on tab focus
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') { loadTimeline(); loadDraftCount(); }
+    });
   }
 
   // ── Global drag & drop ──
