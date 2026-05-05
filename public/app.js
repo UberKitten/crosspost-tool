@@ -640,9 +640,11 @@
     if (data.stashed) {
       toast('Draft stashed', 'success');
       thread = [{ text: '', images: [] }];
-      replyTo = null; showDraftsList = false;
+      replyTo = null; showDraftsList = true;
+      await loadDraftCount();
       freshRenderComposer();
-      loadDraftCount();
+    } else {
+      toast(data.message || 'Failed to stash draft', 'error');
     }
   }
 
