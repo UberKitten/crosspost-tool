@@ -63,6 +63,43 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_drafts_active ON drafts(is_active) WHERE is_active = 1;
     CREATE INDEX IF NOT EXISTS idx_drafts_updated ON drafts(updated_at);
   `);
+
+  migrateDraftsTextToThread(db);
+}
+
+// Pre-thread schema had `text TEXT` and `images TEXT` columns. CREATE TABLE
+// IF NOT EXISTS skips the new schema for those installs, so detect and migrate.
+function migrateDraftsTextToThread(db) {
+  const cols = db.prepare("PRAGMA table_info(drafts)").all().map(c => c.name);
+  if (cols.includes('thread')) return;
+  if (!cols.includes('text')) return;
+
+  const old = db.prepare('SELECT id, text, images, targets, is_active, parent_id, created_at, updated_at FROM drafts').all();
+  db.exec('DROP TABLE drafts');
+  db.exec(`
+    CREATE TABLE drafts (
+      id TEXT PRIMARY KEY,
+      thread TEXT NOT NULL DEFAULT '[{"text":"","images":[]}]',
+      targets TEXT DEFAULT 'both',
+      is_active INTEGER NOT NULL DEFAULT 0,
+      parent_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_drafts_active ON drafts(is_active) WHERE is_active = 1;
+    CREATE INDEX IF NOT EXISTS idx_drafts_updated ON drafts(updated_at);
+  `);
+
+  const insert = db.prepare(`
+    INSERT INTO drafts (id, thread, targets, is_active, parent_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const r of old) {
+    let images = [];
+    try { images = JSON.parse(r.images || '[]'); } catch {}
+    const thread = JSON.stringify([{ text: r.text || '', images }]);
+    insert.run(r.id, thread, r.targets, r.is_active, r.parent_id, r.created_at, r.updated_at);
+  }
 }
 
 module.exports = { getDb };
