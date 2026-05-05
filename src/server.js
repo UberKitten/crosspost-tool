@@ -38,7 +38,7 @@ app.get('/{*splat}', (req, res) => {
 const warnings = [];
 if (!process.env.BLUESKY_HANDLE || !process.env.BLUESKY_APP_PASSWORD) warnings.push('Bluesky credentials not set — Bluesky posting will fail');
 if (!process.env.FEDI_INSTANCE_URL || !process.env.FEDI_ACCESS_TOKEN) warnings.push('Fedi credentials not set — Fedi posting will fail');
-if (!process.env.ANTHROPIC_API_KEY) warnings.push('ANTHROPIC_API_KEY not set — AI alt text will try Claude CLI fallback');
+if (!process.env.ANTHROPIC_API_KEY) warnings.push('ANTHROPIC_API_KEY not set — AI alt text generation disabled');
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Crosspost running on port ${PORT}`);

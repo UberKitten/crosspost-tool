@@ -9,7 +9,7 @@ Self-hosted web app in a Docker container, compatible with Bluesky and Mastodon 
 - **Dual-platform posting** — Bluesky, Fedi, or both. One compose box, pick your targets.
 - **Thread composer** — Build multi-post threads from scratch. Each entry gets its own text and images. Platform settings apply to the whole thread.
 - **Images** — Paste, drag-drop (anywhere on the page), or file picker. Up to 4 per post. Reorder with drag or arrows. Click to preview in lightbox.
-- **AI alt text** — Generate alt text via the Anthropic API or Claude CLI. Editable inline or in the lightbox. Cancellable.
+- **AI alt text** — Generate alt text via the Anthropic API (or any compatible proxy). Editable inline or in the lightbox. Cancellable.
 - **Platform-specific settings** — Bluesky: who can reply (threadgate), content labels. Fedi: visibility, content warnings. Collapsible, highlighted when non-default, greyed out when the platform isn't targeted.
 - **Link cards** — URLs in posts without images auto-generate Bluesky link preview cards with OG metadata and thumbnails.
 - **Drafts** — Auto-saves to the server as you type. Persist across refresh and tabs. Stash drafts (like `git stash`) and restore them later.
@@ -45,7 +45,9 @@ Edit `.env`:
 | `FEDI_CLIENT_ID` | For reauth | Saved by `setup-fedi-auth.sh` |
 | `FEDI_CLIENT_SECRET` | For reauth | Saved by `setup-fedi-auth.sh` |
 | `FEDI_CHAR_LIMIT` | No | Fedi character limit (default: 3000) |
-| `ANTHROPIC_API_KEY` | No | For AI alt text via API. Falls back to Claude CLI if not set. |
+| `ANTHROPIC_API_KEY` | No | For AI alt text. Disabled if not set. |
+| `ANTHROPIC_BASE_URL` | No | Override Anthropic API endpoint (e.g. for a proxy like Dario). |
+| `ALT_TEXT_MODEL` | No | Model id for alt text generation. Defaults to `claude-sonnet-4-6`. |
 | `PORT` | No | Server port (default: 3000) |
 
 #### Fedi auth
@@ -85,12 +87,9 @@ Aspect ratios are preserved and sent to Bluesky so images display correctly (no 
 
 ## AI alt text
 
-Alt text generation requires one of:
+Alt text generation calls the Anthropic Messages API with vision. Set `ANTHROPIC_API_KEY` in `.env` to enable; without it, the AI button is disabled (you can still write alt text manually).
 
-1. **Anthropic API key** (`ANTHROPIC_API_KEY` in `.env`) — uses the API directly with vision. Faster, works in Docker.
-2. **Claude CLI** — falls back to `claude` command if installed and authenticated on the host. Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
-
-If neither is available, alt text generation is disabled (you can still write it manually).
+Set `ANTHROPIC_BASE_URL` to point at any Anthropic-compatible proxy (e.g. self-hosted gateways). The default `ALT_TEXT_MODEL` is `claude-sonnet-4-6` — override if your proxy uses different model ids.
 
 ## Tech stack
 

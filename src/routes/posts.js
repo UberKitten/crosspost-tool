@@ -61,50 +61,39 @@ router.post('/images', (req, res, next) => {
   res.json(results);
 });
 
-// Generate alt text for an image (tries Anthropic API, falls back to Claude CLI)
+// Generate alt text for an image via Anthropic-compatible API
+// (works with anthropic.com or proxies like Dario via ANTHROPIC_BASE_URL)
 const ALT_PROMPT = 'This is for a social media post on Bluesky/Mastodon. Write alt text to help non-sighted users understand the image. If there is text, captions, labels, or dialogue, transcribe it. Describe what is depicted factually and neutrally — no opinions, commentary, or editorializing. Keep it concise. Output ONLY the alt text.';
+const ALT_MODEL = process.env.ALT_TEXT_MODEL || 'claude-sonnet-4-6';
 
 router.post('/images/:filename/alt', async (req, res) => {
   const { filename } = req.params;
   const filePath = path.join(getImageDir(), filename);
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Image not found' });
 
-  // Try Anthropic API first
-  if (process.env.ANTHROPIC_API_KEY) {
-    try {
-      const Anthropic = require('@anthropic-ai/sdk');
-      const client = new Anthropic();
-      const imageData = fs.readFileSync(filePath);
-      const ext = path.extname(filename).slice(1).toLowerCase();
-      const mediaType = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' }[ext] || 'image/jpeg';
-      const message = await client.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 300,
-        messages: [{ role: 'user', content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageData.toString('base64') } },
-          { type: 'text', text: ALT_PROMPT },
-        ]}],
-      });
-      return res.json({ alt: message.content[0]?.text?.trim() || '' });
-    } catch (err) {
-      console.error('Anthropic API alt text failed:', err.message);
-    }
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: 'Alt text generation not configured — set ANTHROPIC_API_KEY' });
   }
 
-  // Fall back to Claude CLI
   try {
-    const { execSync } = require('child_process');
-    const prompt = `Use the Read tool to read the image at ${filePath} and write alt text for it. ${ALT_PROMPT}`;
-    const result = execSync(
-      `claude -p ${JSON.stringify(prompt)} --model sonnet --allowedTools "Read" --max-turns 2`,
-      { timeout: 60000, encoding: 'utf-8' }
-    );
-    return res.json({ alt: result.trim() });
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client = new Anthropic({ baseURL: process.env.ANTHROPIC_BASE_URL });
+    const imageData = fs.readFileSync(filePath);
+    const ext = path.extname(filename).slice(1).toLowerCase();
+    const mediaType = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif' }[ext] || 'image/jpeg';
+    const message = await client.messages.create({
+      model: ALT_MODEL,
+      max_tokens: 300,
+      messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageData.toString('base64') } },
+        { type: 'text', text: ALT_PROMPT },
+      ]}],
+    });
+    return res.json({ alt: message.content[0]?.text?.trim() || '' });
   } catch (err) {
-    console.error('Claude CLI alt text failed:', err.message);
+    console.error('Alt text generation failed:', err.message);
+    return res.status(500).json({ error: 'Alt text generation failed' });
   }
-
-  res.status(500).json({ error: 'Alt text generation failed — set ANTHROPIC_API_KEY or install Claude CLI' });
 });
 
 // Create a post or thread
