@@ -89,7 +89,9 @@ router.post('/images/:filename/alt', async (req, res) => {
         { type: 'text', text: ALT_PROMPT },
       ]}],
     });
-    return res.json({ alt: message.content[0]?.text?.trim() || '' });
+    const alt = (message.content || []).find(b => b.type === 'text')?.text?.trim() || '';
+    if (!alt) console.error('Alt text empty. stop_reason:', message.stop_reason, 'content:', JSON.stringify(message.content));
+    return res.json({ alt });
   } catch (err) {
     console.error('Alt text generation failed:', err.message);
     return res.status(500).json({ error: 'Alt text generation failed' });
