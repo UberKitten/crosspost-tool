@@ -14,7 +14,7 @@ function start(intervalMs = 15000) {
       SELECT * FROM posts
       WHERE scheduled_at IS NOT NULL
         AND posted_at IS NULL
-        AND scheduled_at <= datetime('now')
+        AND datetime(scheduled_at) <= datetime('now')
     `).all();
 
     for (const post of due) {

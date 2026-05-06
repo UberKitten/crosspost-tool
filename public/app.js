@@ -761,7 +761,7 @@
         <div class="post-meta">
           ${p.parent_id ? '<span class="thread-indicator">&gt; </span>' : ''}
           <span class="badge badge-${p.targets}">${p.targets}</span>
-          ${sched ? '<span class="badge badge-scheduled">scheduled</span>' : ''}
+          ${sched ? `<span class="badge badge-scheduled">scheduled for ${fmtAbsolute(new Date(p.scheduled_at))}</span>` : ''}
           <span>${fmtTime(time)}</span>
         </div>
         ${p.content_warning ? `<div class="post-cw">CW: ${esc(p.content_warning)}</div>` : ''}
@@ -837,13 +837,17 @@
   function autoGrowTextarea(el) { el.style.height = 'auto'; el.style.height = Math.max(el.scrollHeight, 120) + 'px'; }
   function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
   function escAttr(s) { return (s || '').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+  function fmtAbsolute(d) {
+    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
   function fmtTime(iso) {
     if (!iso) return '';
     const d = new Date(iso), ms = Date.now() - d;
+    if (ms < 0) return fmtAbsolute(d);
     if (ms < 60000) return 'just now';
     if (ms < 3600000) return `${Math.floor(ms / 60000)}m ago`;
     if (ms < 86400000) return `${Math.floor(ms / 3600000)}h ago`;
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return fmtAbsolute(d);
   }
   function confirmModal(msg) {
     return new Promise(resolve => {
