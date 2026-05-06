@@ -423,13 +423,15 @@ header h1 { font-size: 1.3rem; font-weight: 700; }
   gap: 12px;
   max-width: 95vw;
   max-height: 95vh;
+  overflow-y: auto;
   cursor: default;
 }
 .lightbox-content img {
   max-width: 95vw;
-  max-height: 70vh;
+  max-height: 60vh;
   object-fit: contain;
   border-radius: 8px;
+  flex-shrink: 0;
 }
 .lightbox-alt {
   width: 100%;
@@ -441,6 +443,7 @@ header h1 { font-size: 1.3rem; font-weight: 700; }
 .lightbox-alt-input {
   width: 100%;
   min-height: 48px;
+  max-height: 30vh;
   padding: 10px 12px;
   background: var(--surface2);
   border: 1px solid var(--border);
@@ -449,7 +452,7 @@ header h1 { font-size: 1.3rem; font-weight: 700; }
   font-size: 0.9rem;
   font-family: inherit;
   resize: none;
-  overflow: hidden;
+  overflow-y: auto;
   outline: none;
 }
 .lightbox-alt-input:focus { border-color: var(--accent); }
