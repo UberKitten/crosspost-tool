@@ -18,4 +18,10 @@ ENV PORT=3000
 
 EXPOSE 3000
 
+# Run as non-root so bind-mounted host dirs get the expected ownership
+# (uid 1000) instead of root.
+RUN useradd -u 1000 -m -s /bin/bash crosspost && \
+    chown -R crosspost:crosspost /app
+USER crosspost
+
 CMD ["node", "src/server.js"]
