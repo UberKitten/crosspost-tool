@@ -42,6 +42,9 @@ function migrate(db) {
       filename TEXT NOT NULL,
       alt_text TEXT DEFAULT '',
       mime_type TEXT NOT NULL,
+      media_type TEXT NOT NULL DEFAULT 'image',
+      width INTEGER,
+      height INTEGER,
       sort_order INTEGER NOT NULL DEFAULT 0
     );
 
@@ -65,6 +68,22 @@ function migrate(db) {
   `);
 
   migrateDraftsTextToThread(db);
+  migrateImagesAddMedia(db);
+}
+
+// The `images` table predates video support. Add media_type/width/height
+// columns to existing installs (CREATE TABLE IF NOT EXISTS won't touch them).
+function migrateImagesAddMedia(db) {
+  const cols = db.prepare("PRAGMA table_info(images)").all().map(c => c.name);
+  if (!cols.includes('media_type')) {
+    db.exec("ALTER TABLE images ADD COLUMN media_type TEXT NOT NULL DEFAULT 'image'");
+  }
+  if (!cols.includes('width')) {
+    db.exec('ALTER TABLE images ADD COLUMN width INTEGER');
+  }
+  if (!cols.includes('height')) {
+    db.exec('ALTER TABLE images ADD COLUMN height INTEGER');
+  }
 }
 
 // Pre-thread schema had `text TEXT` and `images TEXT` columns. CREATE TABLE

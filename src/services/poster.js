@@ -21,12 +21,16 @@ async function loadImages(postId) {
       buffer: fs.readFileSync(filePath),
       mimeType: row.mime_type,
       alt: row.alt_text,
+      mediaType: row.media_type || 'image',
+      width: row.width,
+      height: row.height,
     };
   });
 }
 
 // Prepare image for Bluesky: max 2000px any dimension, max 1MB
 async function compressForBluesky(img) {
+  if (img.mediaType === 'video') return img; // video is uploaded as-is
   const BSKY_MAX_DIM = 2000;
   const BSKY_MAX_SIZE = 1000000;
 
@@ -57,6 +61,7 @@ async function compressForBluesky(img) {
 
 // Prepare image for Fedi: respect instance limit (default 10MB)
 async function compressForFedi(img) {
+  if (img.mediaType === 'video') return img; // video is uploaded as-is
   const FEDI_MAX_SIZE = 10 * 1024 * 1024; // 10MB
 
   let buffer = img.buffer;
@@ -123,10 +128,11 @@ async function executePost(postId) {
           };
         }
       }
-      const bskyImages = await Promise.all(images.map(compressForBluesky));
+      const video = images.find(m => m.mediaType === 'video') || null;
+      const bskyImages = video ? [] : await Promise.all(images.map(compressForBluesky));
       const labels = post.bluesky_labels ? JSON.parse(post.bluesky_labels) : [];
       blueskyResult = await bluesky.createPost({
-        text: post.text, images: bskyImages, replyTo,
+        text: post.text, images: bskyImages, video, replyTo,
         labels,
         threadgate: post.bluesky_threadgate || 'everyone',
       });

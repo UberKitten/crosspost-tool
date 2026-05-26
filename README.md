@@ -9,6 +9,7 @@ Self-hosted web app in a Docker container, compatible with Bluesky and Mastodon 
 - **Dual-platform posting** — Bluesky, Fedi, or both. One compose box, pick your targets.
 - **Thread composer** — Build multi-post threads from scratch. Each entry gets its own text and images. Platform settings apply to the whole thread.
 - **Images** — Paste, drag-drop (anywhere on the page), or file picker. Up to 4 per post. Reorder with drag or arrows. Click to preview in lightbox.
+- **Video** — One video per post (instead of images). Non-mp4 (e.g. iOS `.mov`) is transcoded to mp4 automatically. Bluesky uses its async video service; Mastodon-compatible servers upload directly. Requires `ffmpeg` (bundled in the Docker image).
 - **AI alt text** — Generate alt text via the Anthropic API (or any compatible proxy). Editable inline or in the lightbox. Cancellable.
 - **Platform-specific settings** — Bluesky: who can reply (threadgate), content labels. Fedi: visibility, content warnings. Collapsible, highlighted when non-default, greyed out when the platform isn't targeted.
 - **Link cards** — URLs in posts without images auto-generate Bluesky link preview cards with OG metadata and thumbnails.

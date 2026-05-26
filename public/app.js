@@ -1,6 +1,17 @@
 (() => {
   'use strict';
 
+  // A media item is a video if its upload marked it so, or (for older drafts)
+  // by file extension. Otherwise it's an image.
+  function isVideoMedia(m) {
+    const t = m.mediaType || m.media_type;
+    if (t) return t === 'video';
+    return /\.(mp4|mov|webm|m4v)$/i.test(m.filename || '');
+  }
+  function entryHasVideo(entry) {
+    return (entry.images || []).some(isVideoMedia);
+  }
+
   let config = { fediCharLimit: 3000, blueskyCharLimit: 300 };
   let replyTo = null;
   let timelineFilter = 'all';
@@ -151,10 +162,10 @@
         </div>
         <div class="image-upload-area" data-entry-images="${idx}">
           <div class="image-grid" data-img-grid="${idx}"></div>
-          ${entry.images.length < 4 ? `
+          ${entryHasVideo(entry) ? '' : entry.images.length < 4 ? `
             <label class="add-image-btn">
-              <input type="file" accept="image/*" multiple hidden data-file-input="${idx}" />
-              + Add images
+              <input type="file" accept="image/*,video/*" multiple hidden data-file-input="${idx}" />
+              + Add images or video
             </label>
           ` : ''}
         </div>
@@ -232,7 +243,9 @@
       return `
         <div class="draft-item">
           ${allImgs.length ? `<div class="draft-thumbs">${allImgs.slice(0, 4).map(i =>
-            `<img class="draft-thumb" src="/api/posts/images/${i.filename}" data-draft-img="/api/posts/images/${i.filename}" />`
+            isVideoMedia(i)
+              ? `<video class="draft-thumb" src="/api/posts/images/${i.filename}" muted preload="metadata"></video>`
+              : `<img class="draft-thumb" src="/api/posts/images/${i.filename}" data-draft-img="/api/posts/images/${i.filename}" />`
           ).join('')}</div>` : ''}
           <span class="draft-text">${countLabel} ${esc(label)}</span>
           <button data-draft-restore="${d.id}">Restore</button>
@@ -246,20 +259,25 @@
     thread.forEach((entry, idx) => {
       const grid = $(`[data-img-grid="${idx}"]`);
       if (!grid) return;
-      grid.innerHTML = entry.images.map((img, i) => `
-        <div class="image-preview" draggable="true" data-entry="${idx}" data-idx="${i}">
-          <img src="/api/posts/images/${img.filename}" alt="" data-view-entry="${idx}" data-view-idx="${i}" />
+      grid.innerHTML = entry.images.map((img, i) => {
+        const isVid = isVideoMedia(img);
+        const preview = isVid
+          ? `<video src="/api/posts/images/${img.filename}" muted playsinline preload="metadata" data-view-entry="${idx}" data-view-idx="${i}"></video>`
+          : `<img src="/api/posts/images/${img.filename}" alt="" data-view-entry="${idx}" data-view-idx="${i}" />`;
+        return `
+        <div class="image-preview ${isVid ? 'is-video' : ''}" draggable="${!isVid}" data-entry="${idx}" data-idx="${i}">
+          ${preview}
           <div class="img-actions">
-            ${i > 0 ? `<button class="img-action-btn" data-move-entry="${idx}" data-move="${i}" data-dir="-1">&larr;</button>` : ''}
-            ${i < entry.images.length - 1 ? `<button class="img-action-btn" data-move-entry="${idx}" data-move="${i}" data-dir="1">&rarr;</button>` : ''}
+            ${!isVid && i > 0 ? `<button class="img-action-btn" data-move-entry="${idx}" data-move="${i}" data-dir="-1">&larr;</button>` : ''}
+            ${!isVid && i < entry.images.length - 1 ? `<button class="img-action-btn" data-move-entry="${idx}" data-move="${i}" data-dir="1">&rarr;</button>` : ''}
             <button class="img-action-btn" data-remove-img-entry="${idx}" data-remove="${i}">&times;</button>
           </div>
           <div class="alt-row">
             <textarea class="alt-input" data-alt-entry="${idx}" data-alt-idx="${i}" placeholder="Alt text..." rows="1">${esc(img.alt || '')}</textarea>
-            <button class="auto-alt-btn ${isGeneratingAlt(idx, i) ? 'generating' : ''}" data-auto-alt-entry="${idx}" data-auto-alt="${i}">${isGeneratingAlt(idx, i) ? 'Stop' : 'AI'}</button>
+            ${isVid ? '' : `<button class="auto-alt-btn ${isGeneratingAlt(idx, i) ? 'generating' : ''}" data-auto-alt-entry="${idx}" data-auto-alt="${i}">${isGeneratingAlt(idx, i) ? 'Stop' : 'AI'}</button>`}
           </div>
-        </div>
-      `).join('');
+        </div>`;
+      }).join('');
     });
   }
 
@@ -435,9 +453,11 @@
     $$('[data-draft-img]').forEach(img => img.addEventListener('click', e => { e.stopPropagation(); openStaticLightbox(img.dataset.draftImg); }));
   }
 
-  // ── Image handling ──
+  // ── Image / video handling ──
+  function isMediaFile(t) { return t.startsWith('image/') || t.startsWith('video/'); }
+
   function handlePaste(e, entryIdx) {
-    const items = Array.from(e.clipboardData?.items || []).filter(i => i.type.startsWith('image/'));
+    const items = Array.from(e.clipboardData?.items || []).filter(i => isMediaFile(i.type));
     if (!items.length) return;
     e.preventDefault();
     uploadFiles(items.map(i => i.getAsFile()).filter(Boolean), entryIdx);
@@ -445,7 +465,7 @@
 
   function handleDrop(e, entryIdx) {
     e.preventDefault();
-    const files = Array.from(e.dataTransfer?.files || []).filter(f => f.type.startsWith('image/'));
+    const files = Array.from(e.dataTransfer?.files || []).filter(f => isMediaFile(f.type));
     if (files.length) uploadFiles(files, entryIdx);
   }
 
@@ -453,10 +473,19 @@
   async function uploadFiles(files, entryIdx) {
     const entry = thread[entryIdx];
     if (!entry) return;
-    const slots = 4 - entry.images.length;
-    if (slots <= 0) { toast('Max 4 images per post', 'error'); return; }
     if (uploadingFlag) { toast('Upload in progress', 'error'); return; }
-    files = files.slice(0, slots);
+
+    // A post is either a single video or up to 4 images — never both.
+    if (entryHasVideo(entry)) { toast('A post with a video can\'t have other media', 'error'); return; }
+    const hasVideoIncoming = files.some(f => f.type.startsWith('video/'));
+    if (hasVideoIncoming) {
+      if (entry.images.length > 0) { toast('Remove images first — a video must be the only media', 'error'); return; }
+      if (files.length > 1) { toast('Only one video per post', 'error'); return; }
+    }
+
+    const slots = 4 - entry.images.length;
+    if (!hasVideoIncoming && slots <= 0) { toast('Max 4 images per post', 'error'); return; }
+    files = hasVideoIncoming ? files.slice(0, 1) : files.slice(0, slots);
     const totalMB = files.reduce((s, f) => s + f.size, 0) / 1024 / 1024;
 
     const formData = new FormData();
@@ -483,7 +512,8 @@
       });
       for (const img of data) entry.images.push({ ...img, alt: '' });
       triggerAutosave();
-      toast(`Uploaded ${files.length} image${files.length > 1 ? 's' : ''} (${totalMB.toFixed(1)}MB)`, 'success');
+      const noun = data.some(d => d.mediaType === 'video') ? 'video' : `image${files.length > 1 ? 's' : ''}`;
+      toast(`Uploaded ${files.length} ${noun} (${totalMB.toFixed(1)}MB)`, 'success');
     } catch (err) { toast(err.message || 'Upload failed', 'error'); }
     finally { uploadingFlag = false; rerenderComposer(); }
   }
@@ -559,6 +589,7 @@
   function openLightbox(entryIdx, imgIdx) {
     const img = thread[entryIdx]?.images[imgIdx];
     if (!img) return;
+    const isVid = isVideoMedia(img);
     const gen = isGeneratingAlt(entryIdx, imgIdx);
     const lb = document.createElement('div');
     lb.className = 'lightbox';
@@ -566,16 +597,18 @@
     lb.dataset.idx = imgIdx;
     lb.innerHTML = `
       <div class="lightbox-content">
-        <img src="/api/posts/images/${img.filename}" />
+        ${isVid
+          ? `<video src="/api/posts/images/${img.filename}" controls autoplay playsinline></video>`
+          : `<img src="/api/posts/images/${img.filename}" />`}
         <div class="lightbox-alt">
           <textarea class="lightbox-alt-input ${gen ? 'alt-busy' : ''}" placeholder="Alt text...">${esc(img.alt || '')}</textarea>
-          <button class="lightbox-ai-btn ${gen ? 'generating' : ''}">${gen ? 'Stop generating' : 'Generate alt text'}</button>
+          ${isVid ? '' : `<button class="lightbox-ai-btn ${gen ? 'generating' : ''}">${gen ? 'Stop generating' : 'Generate alt text'}</button>`}
         </div>
       </div>`;
     lb.addEventListener('click', e => { if (e.target === lb) closeLightbox(lb, entryIdx, imgIdx); });
     const onKey = e => { if (e.key === 'Escape') { closeLightbox(lb, entryIdx, imgIdx); document.removeEventListener('keydown', onKey); } };
     document.addEventListener('keydown', onKey);
-    lb.querySelector('.lightbox-ai-btn').addEventListener('click', () => generateAlt(entryIdx, imgIdx));
+    lb.querySelector('.lightbox-ai-btn')?.addEventListener('click', () => generateAlt(entryIdx, imgIdx));
     const lbTa = lb.querySelector('.lightbox-alt-input');
     const autoGrow = () => { lbTa.style.height = 'auto'; lbTa.style.height = lbTa.scrollHeight + 'px'; };
     lbTa.addEventListener('input', e => { thread[entryIdx].images[imgIdx].alt = e.target.value; autoGrow(); triggerAutosave(); });
@@ -766,7 +799,11 @@
         </div>
         ${p.content_warning ? `<div class="post-cw">CW: ${esc(p.content_warning)}</div>` : ''}
         <div class="post-text">${esc(p.text)}</div>
-        ${p.images?.length ? `<div class="post-images">${p.images.map(i => `<img src="/api/posts/images/${i.filename}" alt="${escAttr(i.alt_text)}" />`).join('')}</div>` : ''}
+        ${p.images?.length ? `<div class="post-images">${p.images.map(i =>
+          isVideoMedia(i)
+            ? `<video src="/api/posts/images/${i.filename}" controls preload="metadata"></video>`
+            : `<img src="/api/posts/images/${i.filename}" alt="${escAttr(i.alt_text)}" />`
+        ).join('')}</div>` : ''}
         ${errs ? `<div class="post-errors">${p.bluesky_error ? `<div class="error-line">Bluesky: ${esc(p.bluesky_error)}</div>` : ''}${p.fedi_error ? `<div class="error-line">Fedi: ${esc(p.fedi_error)}</div>` : ''}</div>` : ''}
         <div class="post-footer">
           ${!sched ? `<button class="action-btn" data-post-id="${p.id}" data-action="reply">Reply</button>` : ''}

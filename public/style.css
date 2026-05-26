@@ -301,12 +301,14 @@ header h1 { font-size: 1.3rem; font-weight: 700; }
 .image-preview.drag-target {
   box-shadow: 0 0 0 2px var(--accent);
 }
-.image-preview img {
+.image-preview img,
+.image-preview video {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
   display: block;
   cursor: pointer;
+  background: #000;
 }
 .image-preview .img-actions {
   position: absolute;
@@ -426,7 +428,8 @@ header h1 { font-size: 1.3rem; font-weight: 700; }
   overflow-y: auto;
   cursor: default;
 }
-.lightbox-content img {
+.lightbox-content img,
+.lightbox-content video {
   max-width: 95vw;
   max-height: 60vh;
   object-fit: contain;
@@ -675,6 +678,7 @@ header h1 { font-size: 1.3rem; font-weight: 700; }
   object-fit: cover;
   cursor: pointer;
   border: 1px solid var(--border);
+  background: #000;
 }
 .draft-thumb:hover { border-color: var(--accent); }
 
@@ -771,10 +775,12 @@ header h1 { font-size: 1.3rem; font-weight: 700; }
   margin-bottom: 8px;
   overflow-x: auto;
 }
-.post-card .post-images img {
+.post-card .post-images img,
+.post-card .post-images video {
   height: 80px;
   border-radius: 6px;
   object-fit: cover;
+  background: #000;
 }
 
 .post-card .post-errors { font-size: 0.8rem; }

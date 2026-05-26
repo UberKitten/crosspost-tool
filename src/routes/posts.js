@@ -6,6 +6,7 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const { getDb } = require('../db');
 const { executePost, getImageDir } = require('../services/poster');
+const { normalizeVideo } = require('../services/video');
 
 const router = express.Router();
 
@@ -13,8 +14,8 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 150 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) cb(null, true);
-    else cb(new Error('Only image files are allowed'));
+    if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('video/')) cb(null, true);
+    else cb(new Error('Only image and video files are allowed'));
   },
 });
 
@@ -33,9 +34,25 @@ router.post('/images', (req, res, next) => {
   const results = [];
   for (const file of req.files) {
     const id = uuidv4();
+    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+
+    if (file.mimetype.startsWith('video/')) {
+      // Normalize to mp4 (transcode non-mp4 like iOS .mov), probe dimensions.
+      try {
+        const originalExt = path.extname(file.originalname) || '';
+        const { buffer, mimeType, width, height } = await normalizeVideo(file.buffer, file.mimetype, originalExt);
+        const filename = `${id}.mp4`;
+        fs.writeFileSync(path.join(getImageDir(), filename), buffer);
+        results.push({ id, filename, mimeType, mediaType: 'video', width, height, size: buffer.length });
+      } catch (err) {
+        console.error(`Video processing failed (${sizeMB}MB ${file.mimetype}):`, err.message);
+        return res.status(400).json({ error: `Failed to process video (${sizeMB}MB): ${err.message}` });
+      }
+      continue;
+    }
+
     let mimeType = file.mimetype;
     let ext = path.extname(file.originalname) || '.jpg';
-    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
 
     // Convert unsupported formats to jpeg
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
@@ -52,7 +69,7 @@ router.post('/images', (req, res, next) => {
 
       const filename = `${id}${ext}`;
       fs.writeFileSync(path.join(getImageDir(), filename), buffer);
-      results.push({ id, filename, mimeType, size: buffer.length });
+      results.push({ id, filename, mimeType, mediaType: 'image', size: buffer.length });
     } catch (err) {
       console.error(`Image processing failed (${sizeMB}MB ${mimeType}):`, err.message);
       return res.status(400).json({ error: `Failed to process image (${sizeMB}MB): ${err.message}` });
@@ -110,6 +127,15 @@ router.post('/', async (req, res) => {
   if (!targets) return res.status(400).json({ error: 'targets is required' });
   if (!['bluesky', 'fedi', 'both'].includes(targets)) return res.status(400).json({ error: 'targets must be bluesky, fedi, or both' });
 
+  // A post is either up to 4 images or a single video — neither platform
+  // supports mixing the two in one post.
+  for (const entry of entries) {
+    const media = entry.images || [];
+    const videos = media.filter(m => m.mediaType === 'video');
+    if (videos.length > 1) return res.status(400).json({ error: 'Only one video per post' });
+    if (videos.length === 1 && media.length > 1) return res.status(400).json({ error: 'Cannot mix a video with images in one post' });
+  }
+
   const db = getDb();
   const results = [];
   let prevPostId = parentId || null;
@@ -129,9 +155,10 @@ router.post('/', async (req, res) => {
     for (let i = 0; i < entryImages.length; i++) {
       const img = entryImages[i];
       db.prepare(`
-        INSERT INTO images (id, post_id, filename, alt_text, mime_type, sort_order)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(img.id, postId, img.filename, img.alt || '', img.mimeType, i);
+        INSERT INTO images (id, post_id, filename, alt_text, mime_type, media_type, width, height, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(img.id, postId, img.filename, img.alt || '', img.mimeType,
+        img.mediaType || 'image', img.width ?? null, img.height ?? null, i);
     }
 
     if (!scheduledAt) {
