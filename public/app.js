@@ -717,7 +717,7 @@
     pb.textContent = showSchedule ? 'Scheduling...' : (thread.length > 1 ? 'Posting thread...' : 'Posting...');
 
     const body = {
-      thread: thread.map(e => ({ text: e.text, images: e.images.map(i => ({ id: i.id, filename: i.filename, mimeType: i.mimeType, alt: i.alt })) })),
+      thread: thread.map(e => ({ text: e.text, images: e.images.map(i => ({ id: i.id, filename: i.filename, mimeType: i.mimeType, alt: i.alt, mediaType: i.mediaType, width: i.width, height: i.height })) })),
       targets: target,
       visibility: fediVisibility,
       contentWarning: fediCW || '',
