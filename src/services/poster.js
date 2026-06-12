@@ -112,8 +112,20 @@ async function executePost(postId) {
   let blueskyError = null;
   let fediError = null;
 
+  // On retry: if a target already succeeded (has a platform identifier on the
+  // row), skip it — don't re-fire and create a duplicate / clobber a live post.
+  // Surface the prior success in the response so the UI sees both legs.
+  const blueskyAlreadyPosted = !!post.bluesky_uri;
+  const fediAlreadyPosted = !!post.fedi_id;
+  if (blueskyAlreadyPosted) {
+    blueskyResult = { uri: post.bluesky_uri, cid: post.bluesky_cid };
+  }
+  if (fediAlreadyPosted) {
+    fediResult = { id: post.fedi_id };
+  }
+
   // Post to Bluesky (compress images to 1MB limit)
-  if (targets === 'bluesky' || targets === 'both') {
+  if ((targets === 'bluesky' || targets === 'both') && !blueskyAlreadyPosted) {
     try {
       let replyTo = null;
       if (post.parent_id) {
@@ -143,7 +155,7 @@ async function executePost(postId) {
   }
 
   // Post to Fedi (compress to instance limit)
-  if (targets === 'fedi' || targets === 'both') {
+  if ((targets === 'fedi' || targets === 'both') && !fediAlreadyPosted) {
     try {
       let replyTo = null;
       if (post.parent_id) {

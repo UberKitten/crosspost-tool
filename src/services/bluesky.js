@@ -7,7 +7,12 @@ let agent = null;
 
 async function getAgent() {
   if (agent) return agent;
-  agent = new BskyAgent({ service: 'https://bsky.social' });
+  // PDS URL — defaults to bsky.social, override for self-hosted PDS.
+  // The PDS handles auth + writes, and proxies app.bsky.* reads to its
+  // configured appview (default api.bsky.app), so this is the only knob
+  // needed when the appview stays default.
+  const service = process.env.BLUESKY_PDS_URL || 'https://bsky.social';
+  agent = new BskyAgent({ service });
   await agent.login({
     identifier: process.env.BLUESKY_HANDLE,
     password: process.env.BLUESKY_APP_PASSWORD,
