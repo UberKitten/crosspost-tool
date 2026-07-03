@@ -13,8 +13,12 @@ async function getAgent() {
   // needed when the appview stays default.
   const service = process.env.BLUESKY_PDS_URL || 'https://bsky.social';
   agent = new BskyAgent({ service });
+  // Prefer a DID as the login identifier when provided: a DID is immutable, so
+  // login keeps working even when the account's handle changes (e.g. a handle-
+  // rotation script). A handle identifier fails with "Invalid identifier or
+  // password" whenever it doesn't currently resolve to the account.
   await agent.login({
-    identifier: process.env.BLUESKY_HANDLE,
+    identifier: process.env.BLUESKY_IDENTIFIER || process.env.BLUESKY_HANDLE,
     password: process.env.BLUESKY_APP_PASSWORD,
   });
   return agent;

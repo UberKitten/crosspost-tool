@@ -40,6 +40,7 @@ Edit `.env`:
 | Variable | Required | Description |
 |---|---|---|
 | `BLUESKY_HANDLE` | Yes | Your Bluesky handle (e.g. `you.bsky.social`) |
+| `BLUESKY_IDENTIFIER` | No | Log in by DID instead of handle. A DID is immutable, so login keeps working if your handle changes (e.g. a handle-rotation script) — a stale handle otherwise fails with "Invalid identifier or password". Overrides `BLUESKY_HANDLE` for login when set. Resolve yours: `curl "https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=you.bsky.social"`. |
 | `BLUESKY_APP_PASSWORD` | Yes | [App password](https://bsky.app/settings/app-passwords) (not your main password) |
 | `FEDI_INSTANCE_URL` | Yes | Your instance URL (e.g. `https://mastodon.social`) |
 | `FEDI_ACCESS_TOKEN` | Yes | OAuth token — run `./setup-fedi-auth.sh` to generate |
